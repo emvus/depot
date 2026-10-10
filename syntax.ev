@@ -1,0 +1,1125 @@
+// syntax.ev - Emvus syntax, complete showcase
+// Visibility: the default is public, private and protected are written explicitly up front
+// Symbols are case-insensitive, the original spelling is preserved
+// Methods: parentheses are optional in declarations, mandatory in calls
+// Numbers (recommendation): Int = signed 64 bit, Float = IEEE-754 binary64,
+// overflow is checked, integer division rounds toward zero, division by zero is an error
+
+package main
+
+use {
+    std.collections.[IIterator, IList, ListIterator],
+    std.functional.IPredicate,
+    util.playermanager,
+    util.playermanager.gamingPlayer as Gamer
+}
+
+// ---------------------------------------------------------------
+// Constants, enum, record
+// ---------------------------------------------------------------
+
+final var MAX_PLAYERS = 20
+final var SERVER_NAME = "Emvus"
+
+enum Rank {
+    MEMBER,
+    MODERATOR,
+    ADMIN
+}
+
+// record: named, read-only type, access via point.x
+record Point(Int x, Int y)
+
+// Named models with guaranteed fields are classes
+class Config {
+    String path { get }
+
+    Config(String path) {
+        this.path = path
+    }
+}
+
+// ---------------------------------------------------------------
+// Exceptions and error handling
+//
+// Errors are values, there is no try/catch/finally.
+// Expected errors travel in Result<T, E>.
+//
+// exception
+// - exception Name           -> message only (optional String)
+// - exception Name(fields)   -> typed fields, message is generated from them
+// - based inherits from another exception, an optional body overrides message
+// - Built in: IOException, UnknownCaseException
+//
+// Raising errors and returning results
+// - fail <Exception>   -> ends the method with Result.error(...),
+//                         also usable as a switch branch: unknown -> fail UnknownCaseException()
+// - success <value>    -> ends the method with Result.success(value)
+// - return <result>    -> passes on an existing Result unchanged
+//   (Result.success(x) and Result.error(e) remain valid as the explicit form)
+//
+// Propagating and resolving errors
+// - result?            -> on error, immediately fail with the same error,
+//                         the error type must match the method's or inherit from it
+// - result!            -> on error, panic (programming error, not catchable)
+// - result.orElse(x), result.map(...), result.mapError(...), isSuccess(), isError()
+// - switch on Result: success(value) and error(error),
+//   with inheritance error(Type name), most specific type first
+//
+// panic("text") remains for errors that are not meant to be handled
+// A Result that is ignored is a compile error
+// ---------------------------------------------------------------
+
+exception SaveFileException
+exception ReadFileException based IOException
+exception ParseException(String input, Int position)
+exception ConfigException(String path) based IOException
+exception NegativeNumberException(Int value)
+
+// override message
+exception RangeException(Int value, Int min, Int max) {
+    method<String> message {
+        return "${value} is not between ${min} and ${max}"
+    }
+}
+
+// ---------------------------------------------------------------
+// Data classes
+//
+// data class is a normal named class with generated functions
+// - Fields in the class header are the primary data fields, in that order
+// - Properties are readable and not modifiable outside the constructor
+// - Generated: constructor, equals, ==, hashCode, toString, copy, withX
+// - copy and withX are shallow copies
+// - The body only holds methods and computed properties, no additional fields
+// - Default values only at the end of the field list
+// ---------------------------------------------------------------
+
+data class Member(String name, Int age)
+
+data class Server(String host, Int port = 25565, Boolean online = true)
+
+data class Coordinates(Int x, Int y)
+
+data class Employee(String name, Int age) {
+    method<Boolean> isAdult() {
+        return age >= 18
+    }
+
+    method<String> greeting() {
+        return "Hello ${name}"
+    }
+}
+
+data class Pair(T first, U second) where T, U
+
+data class Limit(T value) where T: Comparable<T>
+
+method showDataClasses {
+    Member member = Member("Jason", 20)
+    Member clone = member.copy()
+    Member aged = member.withAge(21)
+    Member renamed = member.withName("Anna")
+
+    Boolean same = member.equals(clone)
+    Boolean sameOperator = member == clone
+    Int hash = member.hashCode()
+    String description = member.toString()
+
+    println("${member.name} ${aged.age} ${renamed.name}")
+    println("${same} ${sameOperator} ${hash} ${description}")
+
+    // Named changes need named arguments, this is still open:
+    // Member moved = member.copy(age = 21)
+
+    Server local = Server("localhost")
+    Server custom = Server("example.com", 25566)
+
+    Coordinates position = Coordinates(10, 20)
+    var { x, y } = position
+    var { horizontal, _ } = position
+
+    Pair<Int, String> pair = Pair(1, "one")
+
+    println("${x + y} ${horizontal} ${local.port} ${custom.port} ${pair.first}")
+}
+
+// ---------------------------------------------------------------
+// Interfaces, abstract class, inheritance
+// based = one base class, implements = one or more interfaces
+// ---------------------------------------------------------------
+
+interface ISpeaker {
+    method<String> speak
+}
+
+interface IPet based ISpeaker {
+    method<Boolean> isHungry
+}
+
+interface ITrainable {
+    method<Int> tricks
+}
+
+abstract class Animal implements ISpeaker {
+    String name { get }
+
+    Animal(String name) {
+        this.name = name
+    }
+
+    abstract method<String> sound
+
+    protected method<String> label {
+        return "[${name}]"
+    }
+
+    method<String> speak {
+        return "${label()} says ${sound()}"
+    }
+}
+
+class Dog based Animal implements IPet, ITrainable {
+    Dog(String name) : super(name) { }
+
+    override method<String> sound {
+        return "Woof"
+    }
+
+    method<Boolean> isHungry {
+        return true
+    }
+
+    method<Int> tricks {
+        return 3
+    }
+}
+
+// ---------------------------------------------------------------
+// Class with properties, fields, constructor, annotations
+// A property with { get, set } has accessors, a field without a block does not
+// ---------------------------------------------------------------
+
+class Person {
+    String name { get }
+    Int age { get, set }
+    private Int visits
+
+    Person(String name, Int age) {
+        this.name = name
+        this.age = age
+    }
+
+    method<String> introduce {
+        return "Hey, I'm ${name} and ${age} years old!"
+    }
+
+    @Async
+    method<Int> calculate(Int value) {
+        return value * value
+    }
+
+    @Synchronized
+    method birthday {
+        age++
+    }
+}
+
+// ---------------------------------------------------------------
+// Generic class
+// Mutable generic containers are invariant:
+// List<Dog> is not automatically List<Animal>
+// ---------------------------------------------------------------
+
+class Box where T {
+    T value { get, set }
+
+    Box(T value) {
+        this.value = value
+    }
+
+    method<Boolean> matches(IPredicate<T> predicate) {
+        return predicate.test(value)
+    }
+}
+
+// ---------------------------------------------------------------
+// Null safety without nullable types
+//
+// The compiler tracks NonNull, MaybeNull and Null along the control flow.
+// - A check like if (x == null) refines the state
+// - The refinement applies to stable local values, not to repeated
+//   accesses of mutable properties: copy into a final var first
+// - Fields and properties must be initialized before the first read,
+//   an explicit = null is allowed
+// ---------------------------------------------------------------
+
+class Profile {
+    String nickname { get, set } = null
+}
+
+method<String> displayName(String nickname) {
+    if (nickname == null) {
+        return "Unknown"
+    }
+
+    return nickname
+}
+
+method<Int> nicknameLength(Profile profile) {
+    final var nickname = profile.nickname
+
+    if (nickname == null) {
+        return 0
+    }
+
+    return nickname.length()
+}
+
+// ---------------------------------------------------------------
+// Generic methods: type parameters go in the where clause
+// ---------------------------------------------------------------
+
+method<T> first(List<T> list) where T {
+    return list.get(0)
+}
+
+method<Int> size(List<T> list) where T {
+    return list.size()
+}
+
+method print(T value) where T {
+    println(value)
+}
+
+method<T> max(T a, T b) where T: Comparable<T> {
+    return a.compareTo(b) > 0 ? a : b
+}
+
+// Multiple type parameters, placeholder body with ...
+method<Dictionary<K, List<V>>> group(List<V> items, Function<V, K> key) where K, V {
+    ...
+}
+
+// Multiple bounds, where clause on its own line
+method<T> process(T value)
+    where T: Serializable & Comparable<T> {
+    ...
+}
+
+// ---------------------------------------------------------------
+// Control flow: guard clauses, no else, braces always
+// ---------------------------------------------------------------
+
+method<String> describeAge(Int age) {
+    if (age < 0) {
+        return "invalid"
+    }
+
+    if (age < 18) {
+        return "minor"
+    }
+
+    return "of age"
+}
+
+method<Result<Int, NegativeNumberException>> factorial(Int n) {
+    if (n < 0) {
+        fail NegativeNumberException(n)
+    }
+
+    Int result = 1
+
+    for (Int i = 2; i <= n; i++) {
+        result = result * i
+    }
+
+    success result
+}
+
+method retry(Int attempts) {
+    Int attempt = 0
+
+    while (attempt < attempts) {
+        attempt++
+
+        if (attempt == 2) {
+            continue
+        }
+
+        if (attempt > MAX_PLAYERS) {
+            break
+        }
+
+        println("Attempt ${attempt}")
+    }
+}
+
+// ---------------------------------------------------------------
+// Result in practice
+// ---------------------------------------------------------------
+
+method<Result<String, ReadFileException>> readConfig(String path) {
+    if (path.isEmpty()) {
+        fail ReadFileException("Path missing")
+    }
+
+    // Files.readText returns a Result itself, so return
+    return Files.readText(path)
+
+    // If Files.readText returned the value directly, it would be:
+    // success Files.readText(path)
+}
+
+method printConfig(String path) {
+    switch (readConfig(path)) {
+        success(text) -> println(text)
+        error(exception) -> errprintln("Error: ${exception.message}")
+    }
+}
+
+// ? propagates the error: ReadFileException inherits from IOException, so it fits
+method<Result<Config, IOException>> loadConfig(String path) {
+    String text = readConfig(path)?
+
+    if (text.isEmpty()) {
+        fail ConfigException(path)
+    }
+
+    success Config(path)
+}
+
+// With inheritance error(Type name), most specific type first
+method handleLoad(String path) {
+    switch (loadConfig(path)) {
+        success(config) -> println(config.path)
+        error(ConfigException exception) -> errprintln("Config empty: ${exception.path}")
+        error(IOException exception) -> errprintln(exception.message)
+    }
+}
+
+method<Result<Int, ParseException>> parsePort(String input) {
+    Int port = Int.parse(input)?
+
+    if (input.length() > 5) {
+        fail ParseException(input, 5)
+    }
+
+    success port
+}
+
+method<Result<Int, RangeException>> checkPort(Int port) {
+    if (port < 1 || port > 65535) {
+        fail RangeException(port, 1, 65535)
+    }
+
+    success port
+}
+
+method showResults {
+    // ! panics on error, orElse returns a fallback value
+    Int port = parsePort("25565")!
+    Int fallback = parsePort("abc").orElse(25565)
+
+    switch (checkPort(port)) {
+        success(value) -> println(value)
+        error(exception) -> errprintln(exception.message)
+    }
+
+    println("${fallback} ${factorial(5)!}")
+}
+
+// scoped cleans up when leaving the scope, there is no finally
+method<String> readFile(String path) {
+    scoped var file = Files.open(path)
+
+    return file.readAll()
+}
+
+// ---------------------------------------------------------------
+// Cascade: .. calls several members in a row on the same object
+// ---------------------------------------------------------------
+
+method showCascade {
+    Person person = Person("Anna", 30)
+        ..birthday()
+        ..age = 40
+        ..birthday()
+
+    println(person.introduce())
+}
+
+// ---------------------------------------------------------------
+// switch: statement, expression, fail, Result
+// unknown = catch-all, the name is freely chosen
+// A switch as an expression needs all cases, a catch-all or a fail branch
+// ---------------------------------------------------------------
+
+method printNumber(String value) {
+    switch (value.toLowerCase()) {
+        "one" -> println(1)
+        "two" -> println(2)
+        unknown -> println(0)
+    }
+}
+
+// Unknown values as errors: fail in the catch-all ends the method with Result.error
+// For this the method must return a Result with a matching error type
+method<Result<Int, UnknownCaseException>> parseNumberStrict(String value) {
+    return switch (value.toLowerCase()) {
+        "one" -> success 1
+        "two" -> success 2
+        unknown -> fail UnknownCaseException()
+    }
+}
+
+method printNumberStrict(String value) {
+    switch (parseNumberStrict(value)) {
+        success(number) -> println(number)
+        error(exception) -> errprintln(exception.message)
+    }
+}
+
+method<Int> toNumber(String value) {
+    Int number = switch (value.toLowerCase()) {
+        "one" -> 1
+        "two" -> 2
+        unknown -> 0
+    }
+
+    return number
+}
+
+method<Int> parseNumber(String value) {
+    return switch (value.toLowerCase()) {
+        "one" -> 1
+        "two" -> 2
+        unknown -> 0
+    }
+}
+
+method<String> rankLabel(Rank rank) {
+    return switch (rank) {
+        MEMBER -> "Member"
+        MODERATOR -> "Moderator"
+        ADMIN -> "Administrator"
+    }
+}
+
+method<Result<Boolean, SaveFileException>> save(Config config) {
+    if (config.path.isEmpty()) {
+        fail SaveFileException("Path missing")
+    }
+
+    success true
+}
+
+method handleSave(Config config) {
+    Result<Boolean, SaveFileException> result = save(config)
+
+    switch (result) {
+        success -> println("SUCCESS")
+        error -> errprintln("ERROR")
+    }
+
+    switch (result) {
+        success(value) -> println(value)
+        error(exception) -> errprintln(exception)
+    }
+}
+
+// ---------------------------------------------------------------
+// Collection ([]) and Dictionary ({})
+// ---------------------------------------------------------------
+
+method showCollections {
+    List<Int> numbers = [1, 2, 3, 4, 5]
+
+    List<Int> doubled = numbers.map((x) -> x * 2)
+    List<Int> even = numbers.filter((x) -> x % 2 == 0)
+    Int total = numbers.reduce(0, (a, b) -> a + b)
+
+    println("${doubled} ${even} ${total}")
+}
+
+// Dictionary literals are JSON-like: keys in quotes,
+// nestable, values may be variables and expressions.
+// [expression]: value takes a computed key.
+//
+// Inference
+// - same key and value types -> Dictionary<K, V>
+// - mixed value types -> Dictionary<K, dynamic>
+// - nested { ... } are dictionaries again
+//
+// Access always via key: server["name"], not server.name
+// Dot notation belongs to real properties and dictionary methods
+method showDictionary {
+    String admin = "Jason"
+    Int port = 25565
+    Boolean online = true
+
+    Dictionary<String, dynamic> server = {
+        "name": SERVER_NAME,
+        "port": port,
+        "online": online,
+        "motd": "Welcome, ${admin}!",
+        "players": [admin, "David", "Anna"],
+        "limits": {
+            "maxPlayers": MAX_PLAYERS,
+            "slots": MAX_PLAYERS - 5
+        },
+        [admin]: "Admin"
+    }
+
+    var points = {
+        "alpha": 10,
+        "beta": 20
+    }
+
+    println(points["alpha"])
+    println(server["name"])
+    println(server["limits"]["maxPlayers"])
+
+    server["port"] = 25566
+    server.put("online", false)
+
+    if (server.contains("motd")) {
+        server.remove("motd")
+    }
+
+    for (String key in server.keys()) {
+        println("${key}: ${server[key]}")
+    }
+
+    println("Entries: ${server.size()}")
+    println(server.toJson())
+}
+
+// ---------------------------------------------------------------
+// Lambdas
+// ---------------------------------------------------------------
+
+method showLambdas {
+    Function<Int, Int> square = (x) -> x * x
+    BiFunction<Int, Int, Int> add = (a, b) -> a + b
+    Runnable greet = () -> println("Hello")
+
+    Function<Int, Int> verbose = (x) -> {
+        Int result = x * x;
+        return result;
+    }
+
+    greet()
+    println("${square(4)} ${add(1, 2)} ${verbose(3)}")
+}
+
+// ---------------------------------------------------------------
+// Dynamic typing
+// var is static type inference, dynamic is requested explicitly with dynamic
+// Generic type information is available at runtime when needed
+// ---------------------------------------------------------------
+
+method showDynamic {
+    dynamic value = 42
+    println(value)
+
+    value = "now a string"
+    println(value)
+
+    value = [1, 2, 3]
+    println(value)
+
+    if (value is List) {
+        println("List with ${value.size()} entries")
+    }
+}
+
+method inspect(dynamic value) {
+    if (value is List<Int>) {
+        println(value.size())
+    }
+}
+
+// ---------------------------------------------------------------
+// Tuples and destructuring
+// [A, B] as a type, [a, b] as a value, { x, y } to unpack by position
+// ---------------------------------------------------------------
+
+class RestAPI {
+    String url { get }
+
+    RestAPI(String url) {
+        this.url = url
+    }
+}
+
+class Body {
+    String content { get }
+
+    Body(String content) {
+        this.content = content
+    }
+}
+
+method<[RestAPI, Body]> createResponse {
+    return [RestAPI("https://example.com"), Body("{}")]
+}
+
+method showTuples {
+    var { restAPI, body } = createResponse()
+    println("${restAPI.url} ${body.content}")
+
+    // Assignment by position, the count must match, _ skips an element
+    var { api, _ } = createResponse()
+
+    // Keep as a whole, access by index
+    [RestAPI, Body] result = createResponse()
+    println(result[0].url)
+}
+
+// Literal inference for []:
+// - same static element types -> List<T>, even with two entries
+// - different element types -> strict tuple, type and length fixed (also Int and Float)
+// - [] is an empty list, the element type must come from the context
+// - [42] is a list with exactly one element
+// - A literal is never reinterpreted as a tuple afterwards,
+//   a tuple with equal types is created via Tuple<...>(...) (proposal)
+method showLiterals {
+    var numbers = [1, 2, 3]
+    var words = ["A", "B"]
+    var pair = [42, "Jason"]
+    var mixed = [true, 42, 3.14]
+    var numeric = [1, 2.0]
+    List<Int> items = []
+    [Int, Int] point = Tuple<Int, Int>(1, 2)
+
+    numbers.add(4)
+    items.add(1)
+
+    println("${words} ${pair[1].length()} ${mixed[2]} ${numeric[1]} ${point[0]}")
+}
+
+// ---------------------------------------------------------------
+// Macros: code generation at compile time
+//
+// macro <Name>(<parameters>) on <target>[, <target>]
+//
+// Targets: Class, Interface, Enum, Method, Constructor,
+//          Property, Parameter, Variable, File, Any
+//
+// Invocation and parameters
+// - Macro parameters are normal typed parameters, invoked as @Name(arg, arg)
+// - target is the annotated element, typed according to the target
+//   (with multiple targets or Any as the element, narrow it first via if (target is Method),
+//   target.body only exists for suitable targets)
+// - Macro.fail(target, "text") aborts the expansion with a compile error
+//
+// Queries (read)
+// - All elements: name, kind, type, visibility, annotations, owner,
+//   hasAnnotation(name), annotation(name)
+// - Class, Interface: properties, methods, constructors, base, interfaces,
+//   hasProperty(name), hasMethod(name)
+// - Enum: entries
+// - Method, Constructor: params, returnType, body
+// - Parameter: owner, position
+// - Property: getter, setter
+//
+// Injection and replacement (write)
+// - Class:   target.addField(...), target.addMethod(...)
+// - Body:    target.body.prepend(...), .append(...), .insert(index, ...),
+//            .replace(index, ...), .clear()
+//
+// quote: code as a template, kinds: statement, expression, field, method, class
+// - $(expression) inserts a value at compile time (name, number, text, code)
+//   also inside strings and names: this.$(name)
+// - ${expression} remains normal interpolation in the generated code
+//
+// Alternatively there is the builder API Statement.* and Expression.* for dynamically built code
+//
+// Rules
+// - Expansion is deterministic, multiple macros per declaration in source order
+// - New local helper names do not collide with existing ones (hygiene)
+// - Duplicate fields or methods are compile errors, nothing is silently overwritten
+// - Generated code is checked like handwritten code
+// - Compile-time IO, network, clock and randomness are blocked
+// - After handover to the IR there are no more AST changes
+// ---------------------------------------------------------------
+
+// Builder variant
+macro Logged on Method {
+    target.body.prepend(Statement.expression(Expression.call("println", [Expression.str("→ ${target.name}")])))
+}
+
+// Injection: insert a field and a method into a class
+macro GenerateId on Class {
+    target.addField(quote field {
+        Int id = 0
+    })
+
+    target.addMethod(quote method {
+        method<Int> getId {
+            return this.id
+        }
+    })
+}
+
+// Injection: put a statement at the start of a body
+macro Trace on Method {
+    target.body.prepend(quote statement {
+        println("Method entered")
+    })
+}
+
+// Injection with query: uses the name of the first parameter
+macro Validate on Method {
+    if (target.params.isEmpty()) {
+        Macro.fail(target, "@Validate needs at least one parameter")
+    }
+
+    Parameter param = target.params.first()
+
+    target.body.prepend(quote statement {
+        if ($(param.name) < 0) {
+            panic("$(param.name) must not be negative")
+        }
+    })
+}
+
+// Injection of multiple methods, with a check for the required field
+macro Resettable on Class {
+    if (!target.hasProperty("count")) {
+        Macro.fail(target, "@Resettable needs a field count")
+    }
+
+    target.addMethod(quote method {
+        method reset {
+            this.count = 0
+        }
+    })
+
+    target.addMethod(quote method {
+        method<Boolean> isEmpty {
+            return this.count == 0
+        }
+    })
+}
+
+// Replacement: replace a statement in the body
+macro ReplaceBody on Method {
+    target.body.replace(0, quote statement {
+        return 42
+    })
+}
+
+// Macro parameters and parameter as target
+macro Range(Int min, Int max) on Parameter {
+    target.owner.body.prepend(quote statement {
+        if ($(target.name) < $(min) || $(target.name) > $(max)) {
+            panic("$(target.name) must be between $(min) and $(max)")
+        }
+    })
+}
+
+// Loop over properties, quote expression as a building block
+macro ToString on Class {
+    List<Expression> parts = target.properties.map((property) -> quote expression {
+        "$(property.name)=${this.$(property.name)}"
+    })
+
+    target.addMethod(quote method {
+        method<String> toString {
+            return $(Expression.join(", ", parts))
+        }
+    })
+}
+
+// Enum as target
+macro Countable on Enum {
+    target.addMethod(quote method {
+        static method<Int> count {
+            return $(target.entries.size())
+        }
+    })
+}
+
+// Multiple targets: narrow down with if
+macro TraceAll on Method, Class {
+    if (target is Method) {
+        target.body.prepend(trace(target.name))
+        return
+    }
+
+    target.methods.forEach((method) -> method.body.prepend(trace(method.name)))
+}
+
+private static method<Statement> trace(String name) {
+    return quote statement {
+        println("→ $(name)")
+    }
+}
+
+// ---------------------------------------------------------------
+// Applying macros
+// ---------------------------------------------------------------
+
+@Logged
+method<Int> compute(Int x) {
+    return x * x
+}
+
+method<Int> setLevel(@Range(1, 10) Int level) {
+    return level
+}
+
+@GenerateId
+class User {
+    private String name
+
+    User(String name) {
+        this.name = name
+    }
+
+    method<String> getName {
+        return this.name
+    }
+}
+
+class Calculator {
+
+    @Trace
+    method<Int> add(Int a, Int b) {
+        return a + b
+    }
+
+    @Trace
+    method<Int> multiply(Int a, Int b) {
+        return a * b
+    }
+}
+
+class Account {
+    private Int balance
+
+    Account() {
+        this.balance = 0
+    }
+
+    @Validate
+    method deposit(Int value) {
+        this.balance = this.balance + value
+    }
+}
+
+@Resettable
+class Counter {
+    private Int count
+
+    Counter() {
+        this.count = 0
+    }
+
+    method increment {
+        this.count = this.count + 1
+    }
+
+    method<Int> getCount {
+        return this.count
+    }
+}
+
+class Answer {
+
+    @ReplaceBody
+    method<Int> calculate {
+        return 100
+    }
+}
+
+@ToString
+class Player {
+    String name { get }
+    Int score { get, set }
+
+    Player(String name, Int score) {
+        this.name = name
+        this.score = score
+    }
+}
+
+@Countable
+enum Difficulty {
+    EASY,
+    NORMAL,
+    HARD
+}
+
+method showMacros {
+    User user = User("Anna")
+    println("${user.getName()} ${user.getId()}")
+
+    Calculator calculator = Calculator()
+    println(calculator.add(1, 2))
+    println(calculator.multiply(3, 4))
+
+    Account account = Account()
+    account.deposit(50)
+
+    Counter counter = Counter()
+        ..increment()
+        ..increment()
+
+    println(counter.getCount())
+    counter.reset()
+    println(counter.isEmpty())
+
+    println(Answer().calculate())
+    println(compute(5))
+    println(setLevel(5))
+    println(Player("Anna", 12).toString())
+    println(Difficulty.count())
+}
+
+// ---------------------------------------------------------------
+// Concurrency: fiber, virtual, thread
+//
+// - fiber -> Fiber<T>, virtual -> VirtualThread<T>, thread -> Thread<T>,
+//   without a return value T = Void
+// - await() waits for completion and returns T,
+//   a failed task passes its error on at the await point
+// - Captures are values, references can point to shared, mutable objects
+// - A task may outlive its creating method, discarding the handle does not end it
+// - Cancellation is cooperative
+// - The three forms do not guarantee the same execution (scheduler, blocking, OS thread)
+// ---------------------------------------------------------------
+
+method<Int> calculate(Int value) {
+    return value * value
+}
+
+private static method<Int> sum(Int a, Int b) {
+    return a + b
+}
+
+private static method<T> head(List<T> values) where T {
+    return values.get(0)
+}
+
+method showTasks {
+    var fiberTask = fiber {
+        return sum(10, 20)
+    }
+
+    var virtualTask = virtual {
+        return sum(30, 40)
+    }
+
+    var threadTask = thread {
+        return sum(50, 60)
+    }
+
+    Int total = fiberTask.await()
+    + virtualTask.await()
+    + threadTask.await()
+
+    println("Total: ${total}")
+}
+
+// Explicit types: Fiber<T>, VirtualThread<T>, Thread<T>
+method showTypedTasks {
+    Fiber<Int> fiberValue = fiber {
+        return 42
+    }
+
+    VirtualThread<String> virtualValue = virtual {
+        return "Hello"
+    }
+
+    Thread<Boolean> threadValue = thread {
+        return true
+    }
+
+    println("${fiberValue.await()} ${virtualValue.await()} ${threadValue.await()}")
+}
+
+// await directly on the block
+method showInlineAwait {
+    Int fiberResult = fiber { return 42 }.await()
+    String virtualResult = virtual { return "Hi" }.await()
+    Boolean threadResult = thread { return true }.await()
+
+    println("${fiberResult} ${virtualResult} ${threadResult}")
+}
+
+// Task without a return value: Thread<Void>
+method start() {
+    Person person = Person("Jason", 20)
+
+    var worker = thread {
+        println(person.introduce())
+    }
+
+    worker.await()
+}
+
+method startInline() {
+    Person person = Person("Jason", 20)
+
+    thread {
+        println(person.introduce())
+    }.await()
+}
+
+// Semicolons are optional
+method showSemicolons {
+    var a = fiber {
+        return calculate(10);
+    };
+
+    var b = virtual {
+        return calculate(20);
+    };
+
+    var c = thread {
+        return calculate(30);
+    };
+
+    println("a=${a.await()} b=${b.await()} c=${c.await()}")
+}
+
+// ---------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------
+
+static method main {
+    Person person = Person("Jason", 20)
+
+    println(person.introduce())
+
+    showTasks()
+    showTypedTasks()
+    showInlineAwait()
+    start()
+    startInline()
+    showSemicolons()
+
+    Fiber<Int> asyncResult = person.calculate(12)
+
+    println("Async result: ${asyncResult.await()}")
+
+    person.birthday()
+    println(person.introduce())
+
+    Dog dog = Dog("Rex")
+    println(dog.speak())
+
+    showCascade()
+    showCollections()
+    showDictionary()
+    showLambdas()
+    showDynamic()
+    showTuples()
+    showLiterals()
+    showResults()
+    showDataClasses()
+    showMacros()
+}
